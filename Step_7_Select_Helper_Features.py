@@ -112,6 +112,7 @@ def load_correlations_from_h5(input_file):
 def select_helper_features(correlations_dict, factor_columns, num_helpers=10):
     """
     Select top helper features for each factor in each window.
+    Only considers factors with '_60m' suffix as potential helper features.
     
     Parameters:
     -----------
@@ -129,16 +130,39 @@ def select_helper_features(correlations_dict, factor_columns, num_helpers=10):
     """
     helper_features = {}
     
+    # Filter to get only 60m factors as potential helpers
+    helper_candidates = [col for col in factor_columns if '_60m' in col]
+    print(f"Found {len(helper_candidates)} potential helper factors with '_60m' suffix")
+    
+    if len(helper_candidates) == 0:
+        print("WARNING: No factors with '_60m' suffix found. Looking for '_TS_60m' or similar patterns...")
+        helper_candidates = [col for col in factor_columns if '60m' in col]
+        print(f"Found {len(helper_candidates)} potential helper factors containing '60m'")
+        
+        if len(helper_candidates) == 0:
+            print("ERROR: No suitable helper factors with '60m' found. Using all factors as potential helpers.")
+            helper_candidates = factor_columns
+    
     for window_id, corr_matrix in correlations_dict.items():
         helper_features[window_id] = {}
         
         for factor in factor_columns:
-            # Get correlation series for this factor
-            factor_corr = corr_matrix[factor].drop(factor)  # Remove self-correlation
+            # Get correlation series for this factor, but only for 60m helper candidates
+            factor_corr = corr_matrix.loc[factor, helper_candidates].copy()
+            
+            # Remove self-correlation if the factor itself is in the candidates
+            if factor in factor_corr.index:
+                factor_corr = factor_corr.drop(factor)
             
             # Rank by absolute correlation
             factor_corr_abs = factor_corr.abs()
-            top_helpers = factor_corr_abs.nlargest(num_helpers).index.tolist()
+            
+            # Ensure we don't try to get more helpers than available
+            available_helpers = min(num_helpers, len(factor_corr_abs))
+            if available_helpers < num_helpers:
+                print(f"Warning: Only {available_helpers} helper candidates available for {factor} in window {window_id}")
+                
+            top_helpers = factor_corr_abs.nlargest(available_helpers).index.tolist()
             
             # Store original correlation values for these helpers
             helper_with_corr = [(helper, corr_matrix.loc[factor, helper]) for helper in top_helpers]
