@@ -1,2 +1,25 @@
 # SpecStory explanation file
 .specstory/.what-is-this.md
+
+# Output directories
+output/
+Multifactor/output/
+
+# System files
+.DS_Store
+__pycache__/
+*.py[cod]
+*$py.class
+.specstory/
+
+# Excel temp files
+~$*.xlsx
+
+# Environment and IDE files
+.env
+.venv
+env/
+venv/
+ENV/
+.idea/
+.vscode/

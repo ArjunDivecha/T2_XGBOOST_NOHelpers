@@ -19,7 +19,11 @@ OUTPUT FILES:
   - Description: JSON format of XGBoost configuration for easier loading in Python.
   - Format: JSON file with parameter dictionary.
 
-Version: 1.0
+NOTES:
+- Parameters are optimized for 4-dimensional feature sets (1m, 3m, 12m, 60m MAs)
+- Helper features are not used in this version of the model
+
+Version: 2.0
 Last Updated: 2024-06-28
 ----------------------------------------------------------------------------------------------------
 '''
@@ -40,6 +44,7 @@ output_dir.mkdir(parents=True, exist_ok=True)
 def define_xgboost_params():
     """
     Define the standard XGBoost parameters for factor forecasting models.
+    Parameters optimized for 4-dimensional feature sets.
     
     Parameters:
     -----------
@@ -51,12 +56,12 @@ def define_xgboost_params():
         Dictionary of XGBoost parameters.
     """
     xgb_params = {
-        # Primary Parameters
-        'max_depth': 4,                # Tree depth: 4
+        # Primary Parameters - adjusted for 4-dimensional model
+        'max_depth': 3,                # Tree depth: 3 (reduced from 4 due to fewer features)
         'n_estimators': 500,           # Trees: 500 with early stopping
         'learning_rate': 0.01,         # Learning rate: 0.01
         'subsample': 0.8,              # Subsample: 80%
-        'colsample_bytree': 0.7,       # Feature sample: 70%
+        'colsample_bytree': 0.9,       # Feature sample: 90% (increased since we have fewer features)
         
         # Additional Parameters
         'objective': 'reg:squarederror',  # For regression tasks
@@ -67,7 +72,7 @@ def define_xgboost_params():
         # Additional Tuning Parameters
         'min_child_weight': 1,
         'gamma': 0,
-        'alpha': 0,                     # L1 regularization
+        'alpha': 0.01,                  # L1 regularization (slightly increased)
         'lambda': 1,                    # L2 regularization
         'random_state': 42              # For reproducibility
     }

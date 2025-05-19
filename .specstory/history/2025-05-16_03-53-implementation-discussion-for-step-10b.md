@@ -251,11 +251,35 @@ _**Assistant**_
 
 ---
 
-
+Cancelled
 
 ---
 
+_**User**_
 
+keep going
+
+---
+
+go on
+
+---
+
+go on
+
+---
+
+go on
+
+---
+
+_**Assistant**_
+
+I'll update the README.md file to include the Step 10B section based on the linear models approach we discussed earlier.
+
+---
+
+Cancelled
 
 ---
 

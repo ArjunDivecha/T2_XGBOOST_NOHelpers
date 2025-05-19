@@ -150,9 +150,29 @@ def select_helper_features(correlations_dict, factor_columns, num_helpers=10):
             # Get correlation series for this factor, but only for 60m helper candidates
             factor_corr = corr_matrix.loc[factor, helper_candidates].copy()
             
-            # Remove self-correlation if the factor itself is in the candidates
+            # More robust self-correlation removal
+            # First check for exact match
             if factor in factor_corr.index:
                 factor_corr = factor_corr.drop(factor)
+            
+            # Then identify the factor's core identity, preserving _CS and _TS suffixes
+            parts = factor.split('_')
+            
+            # Handle factors with timing suffixes (_60m, _120m, etc.)
+            if len(parts) >= 2 and any(timing in parts[-1] for timing in ['60m', '120m', '180m', '240m']):
+                # If the factor has a timing suffix, the core is everything except the last part
+                core_identity = '_'.join(parts[:-1])
+            else:
+                # Otherwise, the whole thing is the core identity
+                core_identity = factor
+                
+            # Now exclude helpers that have the same core identity but different timing
+            helpers_to_exclude = [helper for helper in factor_corr.index 
+                                 if helper.startswith(core_identity + '_')]
+            
+            if helpers_to_exclude:
+                factor_corr = factor_corr.drop(helpers_to_exclude)
+                print(f"Excluded {len(helpers_to_exclude)} related helpers for {factor} in window {window_id}")
             
             # Rank by absolute correlation
             factor_corr_abs = factor_corr.abs()

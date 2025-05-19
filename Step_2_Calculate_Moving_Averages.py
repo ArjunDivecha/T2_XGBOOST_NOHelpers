@@ -24,8 +24,13 @@ OUTPUT FILES:
   - Description: PDF file with visualizations of 60-month moving averages for all factors.
   - Format: PDF with multiple plots.
 
+- S2_Column_Mapping.xlsx
+  - Path: ./output/S2_Column_Mapping.xlsx
+  - Description: Excel file mapping original factor names to their MA column names.
+  - Format: Excel (.xlsx) with column mapping information.
+
 ----------------------------------------------------------------------------------------------------
-Version: 1.0
+Version: 2.0
 Last Updated: Current Date
 ----------------------------------------------------------------------------------------------------
 '''
@@ -43,7 +48,10 @@ import re
 # Section: Utility Functions
 def calculate_moving_averages(series, column_name, windows=[1, 3, 12, 60]):
     """
-    Calculate moving averages for a time series, handling naming conventions intelligently.
+    Calculate moving averages for a time series.
+    
+    IMPORTANT: Each factor (including those with CS/TS suffixes) is treated 
+    as a completely independent factor.
     
     Parameters:
     -----------
@@ -62,15 +70,7 @@ def calculate_moving_averages(series, column_name, windows=[1, 3, 12, 60]):
     result = {}
     
     # Check if the column already has time period suffix like "_3m", "_12m", "_60m"
-    # Look for patterns like "XXX_YY_3m" or "XXX_3m" where 3m is the time period
     existing_period_match = re.search(r'_(\d+)m$', column_name)
-    
-    # Check if the column has CS or TS designation
-    cs_ts_designation = ""
-    if "_CS" in column_name:
-        cs_ts_designation = "_CS"
-    elif "_TS" in column_name:
-        cs_ts_designation = "_TS"
     
     # Store original series under the original column name
     result[column_name] = series
@@ -91,21 +91,8 @@ def calculate_moving_averages(series, column_name, windows=[1, 3, 12, 60]):
             # For other windows, calculate the rolling mean
             ma_series = series.rolling(window=window, min_periods=1).mean()
             
-            # Create appropriate column name
-            # If the column has a CS/TS designation, preserve it
-            if existing_period_match:
-                # For column with existing period like "Factor_TS_3m", name becomes "Factor_TS_3m_12m"
-                # This retains all information about the original factor
-                ma_column_name = f"{column_name}_{window}m"
-            else:
-                # For regular columns like "Factor" or "Factor_TS", name becomes "Factor_12m" or "Factor_TS_12m"
-                base_name = column_name  # Base name is the original name if no CS/TS designation
-                if cs_ts_designation:
-                    # If has CS/TS, split at that designation
-                    base_name = column_name.split(cs_ts_designation)[0]
-                    ma_column_name = f"{base_name}{cs_ts_designation}_{window}m"
-                else:
-                    ma_column_name = f"{base_name}_{window}m"
+            # Simply append the MA period to the original factor name - treat each factor as distinct
+            ma_column_name = f"{column_name}_{window}m"
             
             result[ma_column_name] = ma_series
     
@@ -146,19 +133,9 @@ def create_ma_visualizations(df, date_col, factor_cols, output_file):
         # For each factor, create a visualization
         for factor in factor_cols:
             # Find the 60-month MA column for this factor
-            ma_60m_col = None
+            ma_60m_col = f"{factor}_60m"
             
-            # Try different patterns for 60-month MA
-            if f"{factor}_60m" in df.columns:
-                ma_60m_col = f"{factor}_60m"
-            elif "_CS" in factor and f"{factor.split('_CS')[0]}_CS_60m" in df.columns:
-                ma_60m_col = f"{factor.split('_CS')[0]}_CS_60m"
-            elif "_TS" in factor and f"{factor.split('_TS')[0]}_TS_60m" in df.columns:
-                ma_60m_col = f"{factor.split('_TS')[0]}_TS_60m"
-            elif re.search(r'_\d+m$', factor) and f"{factor}_60m" in df.columns:
-                ma_60m_col = f"{factor}_60m"
-            
-            if ma_60m_col is None:
+            if ma_60m_col not in df.columns:
                 # If no 60-month MA column found, skip this factor
                 print(f"Warning: No 60-month MA column found for {factor}, skipping visualization")
                 continue
@@ -246,9 +223,6 @@ def main():
     column_mapping = {
         "factor_name": [],
         "original_column": [],
-        "has_period_suffix": [],
-        "has_CS": [],
-        "has_TS": [],
         "column_3m": [],
         "column_12m": [],
         "column_60m": []
@@ -265,34 +239,17 @@ def main():
         for col_name, series in ma_dict.items():
             result_df[col_name] = series
         
-        # Add mapping information
-        has_period = bool(re.search(r'_\d+m$', factor_col))
-        has_cs = "_CS" in factor_col
-        has_ts = "_TS" in factor_col
-        
-        # Determine base factor name (without CS/TS/period suffixes)
-        base_name = factor_col
-        if has_cs:
-            base_name = factor_col.split("_CS")[0]
-        elif has_ts:
-            base_name = factor_col.split("_TS")[0]
-        elif has_period:
-            base_name = re.sub(r'_\d+m$', '', factor_col)
-        
         # Find the actual column names created for this factor
-        col_3m = next((col for col in ma_dict.keys() if col.endswith("_3m")), None)
-        col_12m = next((col for col in ma_dict.keys() if col.endswith("_12m")), None)
-        col_60m = next((col for col in ma_dict.keys() if col.endswith("_60m")), None)
+        col_3m = f"{factor_col}_3m" if f"{factor_col}_3m" in ma_dict else "N/A"
+        col_12m = f"{factor_col}_12m" if f"{factor_col}_12m" in ma_dict else "N/A"
+        col_60m = f"{factor_col}_60m" if f"{factor_col}_60m" in ma_dict else "N/A"
         
-        # Add to mapping
-        column_mapping["factor_name"].append(base_name)
+        # IMPORTANT: Treat each factor (including those with CS/TS suffix) as a completely independent factor
+        column_mapping["factor_name"].append(factor_col)
         column_mapping["original_column"].append(factor_col)
-        column_mapping["has_period_suffix"].append(has_period)
-        column_mapping["has_CS"].append(has_cs)
-        column_mapping["has_TS"].append(has_ts)
-        column_mapping["column_3m"].append(col_3m if col_3m else "N/A")
-        column_mapping["column_12m"].append(col_12m if col_12m else "N/A")
-        column_mapping["column_60m"].append(col_60m if col_60m else "N/A")
+        column_mapping["column_3m"].append(col_3m)
+        column_mapping["column_12m"].append(col_12m)
+        column_mapping["column_60m"].append(col_60m)
     
     # Save the column mapping for future steps
     pd.DataFrame(column_mapping).to_excel(column_mapping_file, index=False)
@@ -320,4 +277,4 @@ def main():
     print("\nStep 2 completed successfully!")
 
 if __name__ == "__main__":
-    main() 
+    main()

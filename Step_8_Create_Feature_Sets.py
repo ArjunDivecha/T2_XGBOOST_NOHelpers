@@ -12,11 +12,6 @@ INPUT FILES:
   - Description: Excel file containing the schedule of all 236 rolling windows.
   - Format: Excel (.xlsx) with window parameters and dates.
 
-- S7_Helper_Features.h5
-  - Path: ./output/S7_Helper_Features.h5 (output from Step 7)
-  - Description: HDF5 file containing top 10 most correlated helper features for each factor and window.
-  - Format: HDF5 with window and factor-specific helper features.
-
 - S2_Column_Mapping.xlsx
   - Path: ./output/S2_Column_Mapping.xlsx (output from Step 2)
   - Description: Excel file containing mappings between original factor names and their MA columns.
@@ -25,8 +20,8 @@ INPUT FILES:
 OUTPUT FILES:
 - S8_Feature_Sets.h5
   - Path: ./output/S8_Feature_Sets.h5
-  - Description: HDF5 file containing the 14-dimensional feature sets for each factor and window.
-                 Includes own factor MAs (1, 3, 12, 60-month) and helper factors' 60-month MAs.
+  - Description: HDF5 file containing the 4-dimensional feature sets for each factor and window.
+                 Includes only own factor MAs (1, 3, 12, 60-month).
   - Format: HDF5 with window and factor-specific feature sets.
 
 - S8_Feature_Sets_Sample.xlsx
@@ -42,13 +37,12 @@ OUTPUT FILES:
 
 ----------------------------------------------------------------------------------------------------
 Purpose:
-This script creates the 14-dimensional feature sets for each factor in each window:
+This script creates the 4-dimensional feature sets for each factor in each window:
 - 4 features from the target factor's own MAs (1, 3, 12, 60-month)
-- 10 features from the 60-month MAs of the top 10 helper factors
 
 These feature sets will be used to train factor-specific XGBoost models in subsequent steps.
 
-Version: 3.0
+Version: 4.0
 Last Updated: Current Date
 ----------------------------------------------------------------------------------------------------
 '''
@@ -136,6 +130,9 @@ def load_column_mapping(mapping_file):
     """
     Load column mapping from Excel file and create lookups for factor to MA columns.
     
+    IMPORTANT: Each factor (with or without CS/TS suffixes) is treated as a distinct factor,
+    not as a variant of some base factor.
+    
     Parameters:
     -----------
     mapping_file : str
@@ -157,32 +154,25 @@ def load_column_mapping(mapping_file):
     factor_to_ma_map = {}
     
     for _, row in mapping_df.iterrows():
+        # In the updated column mapping, factor_name and original_column should be the same
+        # as we're treating each factor (including CS/TS variants) as distinct
         factor_name = row['factor_name']
-        original_col = row['original_column']
         
         # Get MA columns
-        ma_1m = original_col  # The original column is the 1-month version
+        ma_1m = factor_name  # The original column is the 1-month version
         ma_3m = row['column_3m'] if row['column_3m'] != 'N/A' else None
         ma_12m = row['column_12m'] if row['column_12m'] != 'N/A' else None
         ma_60m = row['column_60m'] if row['column_60m'] != 'N/A' else None
         
-        # Store mapping for both the factor name and original column name
+        # Store mapping for the factor
         factor_to_ma_map[factor_name] = {
             "1m": ma_1m,
             "3m": ma_3m,
             "12m": ma_12m,
             "60m": ma_60m
         }
-        
-        # Also store the mapping for the original column
-        factor_to_ma_map[original_col] = {
-            "1m": ma_1m,
-            "3m": ma_3m,
-            "12m": ma_12m,
-            "60m": ma_60m
-        }
     
-    print(f"Loaded mapping for {len(factor_to_ma_map)} factors")
+    print(f"Loaded mapping for {len(factor_to_ma_map)} distinct factors")
     return factor_to_ma_map
 
 def get_windows_data(factor_data, window_schedule):
@@ -271,7 +261,10 @@ def precompute_next_month_returns(factor_data, date_column='Date'):
 
 def extract_base_factor_name(factor):
     """
-    Extract the base factor name by removing MA suffixes.
+    Extract the base factor name by removing only MA period suffixes.
+    
+    IMPORTANT: This function does NOT remove _CS or _TS suffixes, as these are
+    considered part of the factor identity, not just suffixes.
     
     Parameters:
     -----------
@@ -281,18 +274,13 @@ def extract_base_factor_name(factor):
     Returns:
     --------
     str
-        Base factor name.
+        Base factor name with any MA period suffixes removed.
     """
-    # Common MA suffix patterns
-    patterns = [
-        r'_[CT]S_[0-9]+m$',  # Matches _CS_3m, _TS_60m, etc.
-        r'_[0-9]+m$',        # Matches _3m, _12m, etc.
-        r'_[CT]S$'           # Matches _CS, _TS suffixes
-    ]
-    
-    for pattern in patterns:
-        if re.search(pattern, factor):
-            return re.sub(pattern, '', factor)
+    # Only match numeric period suffixes, preserving CS/TS designations
+    if factor.endswith("_3m") or factor.endswith("_12m") or factor.endswith("_60m"):
+        # Split at the last underscore
+        parts = factor.rsplit('_', 1)
+        return parts[0]
     
     return factor
 
@@ -333,48 +321,36 @@ def create_feature_sets_for_window(window_id, window_data, helper_features, colu
         'prediction': {}
     }
     
-    # Build a mapping of columns with _60m suffix for fast lookup
-    columns_60m = {}
-    for col in training_data.columns:
-        if col.endswith('_60m'):
-            base_name = col[:-4]  # Remove _60m suffix
-            columns_60m[base_name] = col
+    # Process each factor
+    # Get factors to process - iterate through column mapping to find all factors
+    # with complete MA columns
+    target_factors = []
+    for factor, ma_cols in column_mapping.items():
+        if all(col is not None and col in training_data.columns for col in ma_cols.values()):
+            target_factors.append(factor)
     
-    # Process each factor that has helper features for this window
-    window_helper_features = helper_features.get(window_id, {})
-    
-    for target_factor in tqdm(window_helper_features.keys(), desc=f"Window {window_id}"):
-        # Extract base factor name if it has MA suffixes
+    for target_factor in tqdm(target_factors, desc=f"Window {window_id}"):
+        # IMPORTANT: We don't remove CS/TS designations as they identify distinct factors
+        # Extract base factor name only for removing MA period suffixes
         base_factor = extract_base_factor_name(target_factor)
         
         # Check if this target factor has MA column mapping
         ma_columns = None
         if target_factor in column_mapping:
             ma_columns = column_mapping[target_factor]
-        elif base_factor in column_mapping:
-            ma_columns = column_mapping[base_factor]
         else:
-            print(f"Warning: No column mapping found for target {target_factor} (base: {base_factor}). Skipping.")
+            print(f"Warning: No column mapping found for target {target_factor}. Skipping.")
             continue
         
         # Verify all required MA columns exist
         missing_columns = False
         for period, column in ma_columns.items():
             if column is None or column not in training_data.columns:
-                print(f"Warning: {period} MA column {column} for {base_factor or target_factor} not found. Skipping.")
+                print(f"Warning: {period} MA column {column} for {target_factor} not found. Skipping.")
                 missing_columns = True
                 break
         
         if missing_columns:
-            continue
-        
-        # Get helper features for this target factor
-        helpers = window_helper_features[target_factor]
-        helper_names = [h[0] for h in helpers[:10]]  # Take top 10 helpers
-        
-        # Check if we have enough helpers
-        if len(helper_names) < 10:
-            print(f"Warning: Not enough helpers for {target_factor}. Found {len(helper_names)}, need 10. Skipping.")
             continue
         
         try:
@@ -399,53 +375,6 @@ def create_feature_sets_for_window(window_id, window_data, helper_features, colu
                 f"{target_factor}_12m": prediction_data[ma_columns["12m"]],
                 f"{target_factor}_60m": prediction_data[ma_columns["60m"]]
             })
-            
-            # Create helper features (10 dimensions from 60m versions of helper factors)
-            X_train_helpers = pd.DataFrame()
-            X_val_helpers = pd.DataFrame()
-            X_pred_helpers = pd.DataFrame()
-            
-            valid_helpers = 0
-            for helper_idx, helper_name in enumerate(helper_names):
-                # Extract base helper name if needed
-                base_helper = extract_base_factor_name(helper_name)
-                
-                # Find the 60m version of this helper
-                helper_60m_col = None
-                
-                # Try different ways to find the helper's 60m column
-                if helper_name.endswith('_60m') and helper_name in training_data.columns:
-                    # Direct match if it already ends with _60m
-                    helper_60m_col = helper_name
-                elif helper_name in column_mapping and column_mapping[helper_name]['60m'] is not None:
-                    # Use column mapping if available
-                    helper_60m_col = column_mapping[helper_name]['60m']
-                elif base_helper in column_mapping and column_mapping[base_helper]['60m'] is not None:
-                    # Use base name column mapping if available
-                    helper_60m_col = column_mapping[base_helper]['60m']
-                elif base_helper in columns_60m:
-                    # Use our 60m columns dictionary
-                    helper_60m_col = columns_60m[base_helper]
-                
-                # Skip if we can't find the 60m column
-                if helper_60m_col is None or helper_60m_col not in training_data.columns:
-                    continue
-                
-                # Add to feature sets
-                col_name = f"helper_{valid_helpers+1}_{helper_name}"
-                X_train_helpers[col_name] = training_data[helper_60m_col]
-                X_val_helpers[col_name] = validation_data[helper_60m_col]
-                X_pred_helpers[col_name] = prediction_data[helper_60m_col]
-                valid_helpers += 1
-                
-                # If we have 10 valid helpers, we can stop
-                if valid_helpers >= 10:
-                    break
-            
-            # Check if we got enough helpers
-            if valid_helpers < 10:
-                print(f"Warning: Only found {valid_helpers} valid helpers with 60m columns for {target_factor}. Skipping.")
-                continue
             
             # Create target return series (next month's value)
             target_column = ma_columns["1m"]  # Use the 1m column for target returns
@@ -476,10 +405,10 @@ def create_feature_sets_for_window(window_id, window_data, helper_features, colu
             y_train = training_with_returns['next_return']
             y_val = validation_with_returns['next_return']
             
-            # Combine own features and helper features
-            X_train = pd.concat([X_train_own, X_train_helpers], axis=1)
-            X_val = pd.concat([X_val_own, X_val_helpers], axis=1)
-            X_pred = pd.concat([X_pred_own, X_pred_helpers], axis=1)
+            # Use only the 4 dimensions from own MAs
+            X_train = X_train_own
+            X_val = X_val_own
+            X_pred = X_pred_own
             
             # Remove rows with missing values
             train_mask = ~(X_train.isna().any(axis=1) | y_train.isna())
@@ -828,7 +757,7 @@ def process_window_batch(window_ids, window_data, helper_features, column_mappin
 
 def main():
     print("\n" + "="*80)
-    print("STEP 8: CREATE FEATURE SETS")
+    print("STEP 8: CREATE 4-DIMENSIONAL FEATURE SETS")
     print("="*80)
     
     start_time = time.time()
@@ -836,7 +765,6 @@ def main():
     # Input files
     factor_data_file = os.path.join("output", "S2_T2_Optimizer_with_MA.xlsx")
     window_schedule_file = os.path.join("output", "S4_Window_Schedule.xlsx")
-    helper_features_file = os.path.join("output", "S7_Helper_Features.h5")
     column_mapping_file = os.path.join("output", "S2_Column_Mapping.xlsx")
     
     # Output files
@@ -845,7 +773,7 @@ def main():
     visualization_output = os.path.join("output", "S8_Feature_Sets_Visualization.pdf")
     
     # Check if input files exist
-    for file_path in [factor_data_file, window_schedule_file, helper_features_file, column_mapping_file]:
+    for file_path in [factor_data_file, window_schedule_file, column_mapping_file]:
         if not os.path.exists(file_path):
             print(f"Error: Input file {file_path} not found.")
             return
@@ -855,13 +783,19 @@ def main():
         print("\nStep 1: Loading input data...")
         factor_data = pd.read_excel(factor_data_file)
         window_schedule = pd.read_excel(window_schedule_file)
-        helper_features, factor_columns = load_helper_features(helper_features_file)
         column_mapping = load_column_mapping(column_mapping_file)
+        
+        # Get list of original factor names from the column mapping
+        factor_columns = list(set(column_mapping.keys()))
+        print(f"Found {len(factor_columns)} factors in column mapping")
         
         # Step 2: Preprocess data
         print("\nStep 2: Preprocessing data...")
         window_data = get_windows_data(factor_data, window_schedule)
         next_month_returns = precompute_next_month_returns(factor_data)
+        
+        # For compatibility with existing functions, create empty helper_features
+        helper_features = {}
         
         # Step 3: Create feature sets for each window
         print("\nStep 3: Creating feature sets...")
@@ -928,4 +862,4 @@ def main():
         return
 
 if __name__ == "__main__":
-    main() 
+    main()
